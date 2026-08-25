@@ -146,28 +146,18 @@ def _filter_table_by_elements(table: AnnData | None, elements_dict: dict[str, di
     }
     if not elements_by_name:
         return None
-    # `join_spatialelement_table(how="left")` groups rows by region, which does not preserve the original
-    # row order of `table.obs` when it annotates multiple, interleaved regions (see #1162). Stash the original
-    # row order in a temporary obs column, join, then restore the order and drop the column.
-    order_col = "_spatialdata_filter_table_by_elements_row_order"
-    table.obs[order_col] = np.arange(len(table))
-    try:
-        # Suppress "element not annotated by table" warnings: the table may annotate
-        # only a subset of the elements passed in, which is expected here.
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", UserWarning)
-            _, filtered = join_spatialelement_table(
-                spatial_element_names=list(elements_by_name.keys()),
-                spatial_elements=list(elements_by_name.values()),
-                table=table,
-                how="left",
-            )
-    finally:
-        del table.obs[order_col]
+    # Suppress "element not annotated by table" warnings: the table may annotate
+    # only a subset of the elements passed in, which is expected here.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        _, filtered = join_spatialelement_table(
+            spatial_element_names=list(elements_by_name.keys()),
+            spatial_elements=list(elements_by_name.values()),
+            table=table,
+            how="left",
+        )
     if filtered is None or len(filtered) == 0:
         return None
-    filtered = filtered[np.argsort(filtered.obs[order_col].to_numpy()), :].copy()
-    del filtered.obs[order_col]
     return filtered
 
 
@@ -481,6 +471,12 @@ def _left_join_spatialelement_table(
         # if nan were present, the dtype would have been changed to float
         if joined_indices.dtype == float:
             joined_indices = joined_indices.astype(int)
+        # `groupby(region)` above collects the matching table rows grouped by region, which does not
+        # preserve the original `table.obs` row order when a table annotates multiple interleaved
+        # regions. For `match_rows="no"` there is no element-driven ordering to honor, so
+        # restore the original table row order, as would be expected for a semi-join.
+        if match_rows == "no":
+            joined_indices = joined_indices.sort_values()
     joined_table = table[joined_indices.tolist(), :].copy() if joined_indices is not None else None
     _inplace_fix_subset_categorical_obs(subset_adata=joined_table, original_adata=table)
     if joined_table is not None:
