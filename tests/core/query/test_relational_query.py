@@ -940,6 +940,41 @@ def test_filter_table_categorical_bug(shapes):
     shapes.filter_by_coordinate_system("global")
 
 
+def test_filter_table_preserves_row_order_multiple_interleaved_regions():
+    # regression test for https://github.com/scverse/spatialdata/issues/1162
+    from geopandas import GeoDataFrame
+    from shapely.geometry import Point
+
+    from spatialdata.models import ShapesModel
+
+    def circles(n):
+        gdf = GeoDataFrame({"geometry": [Point(i, i) for i in range(n)], "radius": [1.0] * n})
+        return ShapesModel.parse(gdf)
+
+    # obs rows for regions "a" and "b" are interleaved, not grouped
+    obs = pd.DataFrame(
+        {
+            "region": pd.Categorical(["a", "b", "a", "b", "a", "b"]),
+            "instance_id": [0, 0, 1, 1, 2, 2],
+            "label": ["a0", "b0", "a1", "b1", "a2", "b2"],
+        }
+    )
+    table = TableModel.parse(
+        AnnData(X=np.zeros((6, 1)), obs=obs, var=pd.DataFrame(index=["g0"])),
+        region=["a", "b"],
+        region_key="region",
+        instance_key="instance_id",
+    )
+    sdata = SpatialData(shapes={"a": circles(3), "b": circles(3)}, tables={"table": table})
+
+    before = list(sdata["table"].obs["label"])
+    filtered = sdata.filter_by_coordinate_system("global")
+    after = list(filtered["table"].obs["label"])
+    assert after == before
+    # the original table must not be mutated by the filtering operation
+    assert list(sdata["table"].obs.columns) == ["region", "instance_id", "label"]
+
+
 def test_filter_table_non_annotating(full_sdata):
     obs = pd.DataFrame({"test": ["a", "b", "c"]}, index=list(map(str, range(3))))
     adata = AnnData(obs=obs)

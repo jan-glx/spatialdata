@@ -146,17 +146,29 @@ def _filter_table_by_elements(table: AnnData | None, elements_dict: dict[str, di
     }
     if not elements_by_name:
         return None
-    # Suppress "element not annotated by table" warnings: the table may annotate
-    # only a subset of the elements passed in, which is expected here.
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", UserWarning)
-        _, filtered = join_spatialelement_table(
-            spatial_element_names=list(elements_by_name.keys()),
-            spatial_elements=list(elements_by_name.values()),
-            table=table,
-            how="left",
-        )
-    return filtered if filtered is not None and len(filtered) > 0 else None
+    # `join_spatialelement_table(how="left")` groups rows by region, which does not preserve the original
+    # row order of `table.obs` when it annotates multiple, interleaved regions (see #1162). Stash the original
+    # row order in a temporary obs column, join, then restore the order and drop the column.
+    order_col = "_spatialdata_filter_table_by_elements_row_order"
+    table.obs[order_col] = np.arange(len(table))
+    try:
+        # Suppress "element not annotated by table" warnings: the table may annotate
+        # only a subset of the elements passed in, which is expected here.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            _, filtered = join_spatialelement_table(
+                spatial_element_names=list(elements_by_name.keys()),
+                spatial_elements=list(elements_by_name.values()),
+                table=table,
+                how="left",
+            )
+    finally:
+        del table.obs[order_col]
+    if filtered is None or len(filtered) == 0:
+        return None
+    filtered = filtered[np.argsort(filtered.obs[order_col].to_numpy()), :].copy()
+    del filtered.obs[order_col]
+    return filtered
 
 
 def _get_joined_table_indices(
