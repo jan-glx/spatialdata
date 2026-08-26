@@ -156,9 +156,7 @@ def _filter_table_by_elements(table: AnnData | None, elements_dict: dict[str, di
             table=table,
             how="left",
         )
-    if filtered is None or len(filtered) == 0:
-        return None
-    return filtered
+    return filtered if filtered is not None and len(filtered) > 0 else None
 
 
 def _get_joined_table_indices(
