@@ -252,6 +252,13 @@ def _right_exclusive_join_spatialelement_table(
     match_rows: Literal["left", "no", "right"],
     filter_label_pixels: bool | None = None,
 ) -> tuple[dict[str, Any], AnnData | None]:
+    if match_rows == "left":
+        warnings.warn(
+            "Matching rows 'left' is not supported for 'right_exclusive' join; it will be treated as 'no'.",
+            UserWarning,
+            stacklevel=2,
+        )
+        match_rows = "no"
     regions, region_column_name, instance_key = get_table_keys(table)
     if isinstance(regions, str):
         regions = [regions]
@@ -297,7 +304,12 @@ def _right_join_spatialelement_table(
     filter_label_pixels: bool | None = None,
 ) -> tuple[dict[str, Any], AnnData]:
     if match_rows == "left":
-        warnings.warn("Matching rows 'left' is not supported for 'right' join.", UserWarning, stacklevel=2)
+        warnings.warn(
+            "Matching rows 'left' is not supported for 'right' join; it will be treated as 'no'.",
+            UserWarning,
+            stacklevel=2,
+        )
+        match_rows = "no"
     regions, region_column_name, instance_key = get_table_keys(table)
     if isinstance(regions, str):
         regions = [regions]
@@ -383,6 +395,14 @@ def _inner_join_spatialelement_table(
 
     if joined_indices is not None:
         joined_indices = joined_indices.dropna() if any(joined_indices.isna()) else joined_indices
+        # `groupby(region)` above collects the matching table rows grouped by region, which does not
+        # preserve the original `table.obs` row order when a table annotates multiple interleaved
+        # regions. For `match_rows="no"` there is no element-driven ordering to honor, and for
+        # `match_rows="right"` the table's own row order takes priority (only `match_rows="left"` lets the
+        # element's row order override it), so in both cases restore the original table row order, as
+        # would be expected for a semi-join.
+        if match_rows in ("no", "right"):
+            joined_indices = joined_indices.sort_values()
 
     joined_table = table[joined_indices.tolist(), :].copy() if joined_indices is not None else None
 
@@ -401,6 +421,13 @@ def _left_exclusive_join_spatialelement_table(
     match_rows: Literal["left", "no", "right"],
     filter_label_pixels: bool | None = None,
 ) -> tuple[dict[str, Any], AnnData | None]:
+    if match_rows == "right":
+        warnings.warn(
+            "Matching rows 'right' is not supported for 'left_exclusive' join; it will be treated as 'no'.",
+            UserWarning,
+            stacklevel=2,
+        )
+        match_rows = "no"
     regions, region_column_name, instance_key = get_table_keys(table)
     if isinstance(regions, str):
         regions = [regions]
@@ -411,8 +438,10 @@ def _left_exclusive_join_spatialelement_table(
                 group_df = groups_df.get_group(name)
                 table_instance_key_column = group_df[instance_key]
                 if element_type in ["points", "shapes"]:
-                    mask = np.full(len(element), True, dtype=bool)
-                    mask[table_instance_key_column.values] = False
+                    # the table's instance ids are the element's index *labels*, not positions in the
+                    # element (the element's index need not be a default 0..n-1 range, and may not even
+                    # contain all the table's instance ids for this region)
+                    mask = ~np.isin(element.index, table_instance_key_column.values)
                     masked_element = element.loc[mask, :] if mask.sum() != 0 else None
                     element_dict[element_type][name] = masked_element
                 else:
@@ -438,7 +467,12 @@ def _left_join_spatialelement_table(
     filter_label_pixels: bool | None = None,
 ) -> tuple[dict[str, Any], AnnData]:
     if match_rows == "right":
-        warnings.warn("Matching rows 'right' is not supported for 'left' join.", UserWarning, stacklevel=2)
+        warnings.warn(
+            "Matching rows 'right' is not supported for 'left' join; it will be treated as 'no'.",
+            UserWarning,
+            stacklevel=2,
+        )
+        match_rows = "no"
     regions, region_column_name, instance_key = get_table_keys(table)
     if isinstance(regions, str):
         regions = [regions]
