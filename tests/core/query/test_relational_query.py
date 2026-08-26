@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import warnings
+
 import annsel as an
 import numpy as np
 import pandas as pd
@@ -973,6 +975,86 @@ def test_filter_table_preserves_row_order_multiple_interleaved_regions():
     assert after == before
     # the original table must not be mutated by the filtering operation
     assert list(sdata["table"].obs.columns) == ["region", "instance_id", "label"]
+
+
+def _make_interleaved_regions_sdata() -> tuple[SpatialData, dict[str, list[str] | None]]:
+    from geopandas import GeoDataFrame
+    from shapely.geometry import Point
+
+    from spatialdata.models import ShapesModel
+
+    def circles(indices):
+        # `indices` gives both the number of circles and the (non-default) row order of the element.
+        gdf = GeoDataFrame(
+            {"geometry": [Point(i, i) for i in range(len(indices))], "radius": [1.0] * len(indices)},
+            index=pd.Index(indices),
+        )
+        return ShapesModel.parse(gdf)
+
+    # assumptions/comments
+    # - no duplicate element index (within the same element) or instance_key values (in the table). This is tested
+    # elsewhere and ideally it is independent of the edge cases here.
+    # - the left_exclusive join is skipped since it does not return a table and here we are testing that the order of
+    #   the rows of the returned table is what we expect
+    #
+    # edge cases being tested
+    # - instance_id values are non-monotonic
+    # - the index in each element is non-monotonic
+    #   we also set the index of the table obs to random number; these should be ignored (in the code we call .index on
+    #   a region_key column, but the index is freshly reset with reset_index())
+    # - instance_id 3 (row with label "b3") has no corresponding circle in region "b" (whose circles only cover
+    #   indices 0-2), so it is only kept by the "right" and "right_exclusive" joins
+    obs = pd.DataFrame(
+        {
+            "region": pd.Categorical(["b", "b", "a", "b", "a", "a", "b"]),
+            "instance_id": [2, 1, 2, 3, 1, 0, 0],
+            "label": ["b2", "b1", "a2", "b3", "a1", "a0", "b0"],
+        },
+        index=np.random.default_rng(0).integers(0, 3, size=7).astype(str),
+    )
+    shapes = {"a": circles([2, 1, 0]), "b": circles([1, 2, 0])}
+    expected = {
+        "left": ["b2", "b1", "a2", "a1", "a0", "b0"],
+        "inner": ["b2", "b1", "a2", "a1", "a0", "b0"],
+        "right": ["b2", "b1", "a2", "b3", "a1", "a0", "b0"],
+        "right_exclusive": ["b3"],
+    }
+
+    table = TableModel.parse(
+        AnnData(X=np.zeros((len(obs), 1)), obs=obs, var=pd.DataFrame(index=["g0"])),
+        region=["a", "b"],
+        region_key="region",
+        instance_key="instance_id",
+    )
+    sdata = SpatialData(shapes=shapes, tables={"table": table})
+    return sdata, expected
+
+
+@pytest.mark.parametrize("match_rows", ["no", "left", "right"])
+@pytest.mark.parametrize("how", ["left", "inner", "right", "right_exclusive"])
+def test_join_preserves_row_order_multiple_interleaved_regions(how, match_rows):
+    # extension of the regression test above (for https://github.com/scverse/spatialdata/issues/1162)
+    # covering all `how` values of `join_spatialelement_table` for which row order is meaningful, crossed
+    # with all values of `match_rows` (see `_make_interleaved_regions_sdata`).
+    sdata, expected_by_how = _make_interleaved_regions_sdata()
+    expected = expected_by_how[how]
+
+    with warnings.catch_warnings():
+        # "left"/"right" join emit a UserWarning when combined with an unsupported match_rows value.
+        warnings.simplefilter("ignore", UserWarning)
+        _, joined_table = join_spatialelement_table(
+            sdata=sdata,
+            spatial_element_names=["a", "b"],
+            table_name="table",
+            how=how,
+            match_rows=match_rows,
+        )
+
+    if expected is None:
+        assert joined_table is None
+    else:
+        assert joined_table is not None
+        assert list(joined_table.obs["label"]) == expected
 
 
 def test_filter_table_non_annotating(full_sdata):
