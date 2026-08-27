@@ -1016,9 +1016,8 @@ def _make_interleaved_regions_sdata() -> tuple[SpatialData, dict[str, dict[str, 
         },
         "inner": {
             "no": _JoinOutcome(
-                # FIXME: it should be element_index={"a": [2, 1, 0], "b": [1, 2, 0]}
                 table_order=["b2", "b1", "a2", "a1", "a0", "b0"],
-                element_index={"a": [2, 1, 0], "b": [2, 1, 0]},
+                element_index={"a": [2, 1, 0], "b": [1, 2, 0]},
             ),
             "left": _JoinOutcome(
                 table_order=["a2", "a1", "a0", "b1", "b2", "b0"], element_index={"a": [2, 1, 0], "b": [1, 2, 0]}
@@ -1029,14 +1028,13 @@ def _make_interleaved_regions_sdata() -> tuple[SpatialData, dict[str, dict[str, 
         },
         "right": {
             "no": _JoinOutcome(
-                # FIXME: it should be element_index={"a": [2, 1, 0], "b": [1, 2, 0]}
                 table_order=["b2", "b1", "a2", "b3", "a1", "a0", "b0"],
-                element_index={"a": [2, 1, 0], "b": [2, 1, 0]},
+                element_index={"a": [2, 1, 0], "b": [1, 2, 0]},
             ),
             "left": _JoinOutcome(
                 table_order=["b2", "b1", "a2", "b3", "a1", "a0", "b0"],
                 warns=True,
-                element_index={"a": [2, 1, 0], "b": [2, 1, 0]},
+                element_index={"a": [2, 1, 0], "b": [1, 2, 0]},
             ),
             "right": _JoinOutcome(
                 table_order=["b2", "b1", "a2", "b3", "a1", "a0", "b0"], element_index={"a": [2, 1, 0], "b": [2, 1, 0]}

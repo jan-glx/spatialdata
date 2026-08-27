@@ -236,6 +236,9 @@ def _get_masked_element(
             mask_values = left_index[mask]
         else:
             mask_values = left_index
+    elif mask_values is not None:
+        order_mask = np.isin(element_indices, mask_values)
+        mask_values = np.asarray(element_indices)[order_mask]
 
     if isinstance(element, DaskDataFrame):
         return element.map_partitions(lambda df: df.loc[mask_values], meta=element)
