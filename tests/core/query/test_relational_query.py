@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import warnings
 from dataclasses import dataclass, field
 
@@ -943,41 +944,6 @@ def test_filter_table_categorical_bug(shapes):
     shapes.filter_by_coordinate_system("global")
 
 
-def test_filter_table_preserves_row_order_multiple_interleaved_regions():
-    # regression test for https://github.com/scverse/spatialdata/issues/1162
-    from geopandas import GeoDataFrame
-    from shapely.geometry import Point
-
-    from spatialdata.models import ShapesModel
-
-    def circles(n):
-        gdf = GeoDataFrame({"geometry": [Point(i, i) for i in range(n)], "radius": [1.0] * n})
-        return ShapesModel.parse(gdf)
-
-    # obs rows for regions "a" and "b" are interleaved, not grouped
-    obs = pd.DataFrame(
-        {
-            "region": pd.Categorical(["a", "b", "a", "b", "a", "b"]),
-            "instance_id": [0, 0, 1, 1, 2, 2],
-            "label": ["a0", "b0", "a1", "b1", "a2", "b2"],
-        }
-    )
-    table = TableModel.parse(
-        AnnData(X=np.zeros((6, 1)), obs=obs, var=pd.DataFrame(index=["g0"])),
-        region=["a", "b"],
-        region_key="region",
-        instance_key="instance_id",
-    )
-    sdata = SpatialData(shapes={"a": circles(3), "b": circles(3)}, tables={"table": table})
-
-    before = list(sdata["table"].obs["label"])
-    filtered = sdata.filter_by_coordinate_system("global")
-    after = list(filtered["table"].obs["label"])
-    assert after == before
-    # the original table must not be mutated by the filtering operation
-    assert list(sdata["table"].obs.columns) == ["region", "instance_id", "label"]
-
-
 @dataclass
 class _JoinOutcome:
     """Expected outcome of a `join_spatialelement_table()` call, for a given `how`/`match_rows` pair."""
@@ -1107,10 +1073,10 @@ def _make_interleaved_regions_sdata() -> tuple[SpatialData, dict[str, dict[str, 
 @pytest.mark.parametrize("match_rows", ["no", "left", "right"])
 @pytest.mark.parametrize("how", ["left", "left_exclusive", "inner", "right", "right_exclusive"])
 def test_join_preserves_row_order_multiple_interleaved_regions(how, match_rows):
-    # extension of the regression test for https://github.com/scverse/spatialdata/issues/1162
-    # covering all `how` values of `join_spatialelement_table` for which row order is meaningful, crossed
-    # with all values of `match_rows`, and checking whether the "match_rows not supported" UserWarning is
-    # (or isn't) actually raised (see `_make_interleaved_regions_sdata` and `_JoinOutcome`).
+    # generalization to all the join types of the bug reported in https://github.com/scverse/spatialdata/issues/1162
+    # covering all `how` values of `join_spatialelement_table`, crossed with all values of `match_rows`, and checking
+    # whether the row orders of the returned spatial elements and table are correct and if the "match_rows not
+    # supported" UserWarning is (or isn't) actually raised (see `_make_interleaved_regions_sdata` and `_JoinOutcome`).
     sdata, expected_by_how_and_match_rows = _make_interleaved_regions_sdata()
     outcome = expected_by_how_and_match_rows[how][match_rows]
 
@@ -1125,9 +1091,14 @@ def test_join_preserves_row_order_multiple_interleaved_regions(how, match_rows):
         )
 
     # other UserWarnings can also fire here (e.g. anndata's "Observation names are not unique", triggered by
-    # the fixture's duplicated obs_names), so only look for the one this test is actually about.
+    # the fixture's duplicated obs_names), so only look for the one this test is actually about. The message
+    # looks like "Matching rows 'right' is not supported for 'left_exclusive' join; it will be treated as 'no'.",
+    # with the two quoted values varying by `match_rows` / `how`.
+    unsupported_match_rows_re = re.compile(
+        r"Matching rows '[^']+' is not supported for '[^']+' join; it will be treated as 'no'\."
+    )
     unsupported_match_rows_warnings = [
-        w for w in record if issubclass(w.category, UserWarning) and "is not supported for" in str(w.message)
+        w for w in record if issubclass(w.category, UserWarning) and unsupported_match_rows_re.search(str(w.message))
     ]
     assert bool(unsupported_match_rows_warnings) == outcome.warns
 
