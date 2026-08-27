@@ -949,11 +949,11 @@ class _JoinOutcome:
     """Expected outcome of a `join_spatialelement_table()` call, for a given `how`/`match_rows` pair."""
 
     # expected `joined_table.obs["label"]`, in order; `None` when no table is expected to be returned
-    order: list[str] | None = None
+    table_order: list[str] | None = None
     # whether a "Matching rows '<...>' is not supported for '<...>' join." UserWarning is expected to be emitted
     warns: bool = False
-    # expected `element_dict[name].index`, in order, for name in {"a", "b"}; `None` for a name whose
-    # returned element is expected to be `None` (e.g. fully excluded, or not returned by this join type)
+    # expected values of `element_dict[name].index` for element name in {"a", "b"}; `None` for a element name whose
+    # returned join result is expected to be `None` (e.g. fully excluded, or not returned by this join type)
     element_index: dict[str, list[int] | None] = field(default_factory=dict)
 
 
@@ -979,7 +979,8 @@ def _make_interleaved_regions_sdata() -> tuple[SpatialData, dict[str, dict[str, 
     # - instance_id values are non-monotonic
     # - the index in each spatial element is non-monotonic
     # - we also set the index of the table obs to random values; these should be ignored (in the code we call .index on
-    #   a region_key column, but the index is freshly reset by a nearby call of .reset_index())
+    #   a region_key column, but the index is freshly reset by a nearby call of .reset_index() inside the join
+    #   machinery)
     obs = pd.DataFrame(
         {
             "region": pd.Categorical(["b", "b", "a", "b", "a", "a", "b"]),
@@ -989,79 +990,67 @@ def _make_interleaved_regions_sdata() -> tuple[SpatialData, dict[str, dict[str, 
         index=np.random.default_rng(0).integers(0, 3, size=7).astype(str),
     )
     shapes = {"a": circles([2, 1, 0]), "b": circles([1, 2, 0])}
-    # notes:
-    # - to make understanding easier, you may want to refer to the figure on joins from the docs:
-    #   https://spatialdata.scverse.org/en/stable/tutorials/notebooks/notebooks/examples/tables.html
-    # - the emission of a UserWarning ("Matching rows '<...>' is not supported for '<...>' join, it will be
-    #   treated as 'no'.") is tested for the combinations where match_rows and how disagree on which side
-    #   takes priority: "left"-priority joins ("left", "left_exclusive") with match_rows="right", and
-    #   "right"-priority joins ("right", "right_exclusive") with match_rows="left". "inner" accepts any
-    #   match_rows without warning. In the warning cases, match_rows is coerced to "no" internally (as the
-    #   warning says), so the expected order/behavior is the same as for match_rows="no".
-    # - `element_index`: "left" never masks its elements at all (they come back untouched, so both "a" and
-    #   "b" always keep their original, given index order, [2, 1, 0] and [1, 2, 0]). "left_exclusive" and
-    #   "right_exclusive" always return `None` for both elements on this fixture (every circle is matched by
-    #   some table row, so nothing is left to be "exclusive" about; the extra unmatched row "b3" is a table
-    #   row, not a circle). "inner" and "right" mask each element to the region's *table*-matched instance
-    #   ids -- in table row order for match_rows in {"no", "right"} (region "b" table rows are "b2","b1","b0"
-    #   -> [2, 1, 0]), and in the element's own given order for match_rows="left" on "inner" specifically
-    #   (region "b" circles are ordered [1, 2, 0]; "right" coerces match_rows="left" to "no", so it never
-    #   takes this branch). Region "a"'s table order and circle order coincide ([2, 1, 0] either way), so
-    #   "a" is always [2, 1, 0] regardless of match_rows.
+    # to make understanding easier, you may want to refer to the figure on joins from the docs:
+    # https://spatialdata.scverse.org/en/stable/tutorials/notebooks/notebooks/examples/tables.html
     expected = {
         "left": {
             "no": _JoinOutcome(
-                order=["b2", "b1", "a2", "a1", "a0", "b0"], element_index={"a": [2, 1, 0], "b": [1, 2, 0]}
+                table_order=["b2", "b1", "a2", "a1", "a0", "b0"], element_index={"a": [2, 1, 0], "b": [1, 2, 0]}
             ),
             "left": _JoinOutcome(
-                order=["a2", "a1", "a0", "b1", "b2", "b0"], element_index={"a": [2, 1, 0], "b": [1, 2, 0]}
+                table_order=["a2", "a1", "a0", "b1", "b2", "b0"], element_index={"a": [2, 1, 0], "b": [1, 2, 0]}
             ),
             "right": _JoinOutcome(
-                order=["b2", "b1", "a2", "a1", "a0", "b0"],
+                table_order=["b2", "b1", "a2", "a1", "a0", "b0"],
                 warns=True,
                 element_index={"a": [2, 1, 0], "b": [1, 2, 0]},
             ),
         },
         "left_exclusive": {
+            # TODO: make this test more interesting by adding indices 5, 4 to "a" and 4, 6 to "b"
             # by design, "left_exclusive" never returns a table (only filtered elements), regardless of
             # match_rows or whether anything was actually excluded.
-            "no": _JoinOutcome(order=None, element_index={"a": None, "b": None}),
-            "left": _JoinOutcome(order=None, element_index={"a": None, "b": None}),
-            "right": _JoinOutcome(order=None, warns=True, element_index={"a": None, "b": None}),
+            "no": _JoinOutcome(table_order=None, element_index={"a": None, "b": None}),
+            "left": _JoinOutcome(table_order=None, element_index={"a": None, "b": None}),
+            "right": _JoinOutcome(table_order=None, warns=True, element_index={"a": None, "b": None}),
         },
         "inner": {
             "no": _JoinOutcome(
-                order=["b2", "b1", "a2", "a1", "a0", "b0"], element_index={"a": [2, 1, 0], "b": [2, 1, 0]}
+                # FIXME: it should be element_index={"a": [2, 1, 0], "b": [1, 2, 0]}
+                table_order=["b2", "b1", "a2", "a1", "a0", "b0"],
+                element_index={"a": [2, 1, 0], "b": [2, 1, 0]},
             ),
             "left": _JoinOutcome(
-                order=["a2", "a1", "a0", "b1", "b2", "b0"], element_index={"a": [2, 1, 0], "b": [1, 2, 0]}
+                table_order=["a2", "a1", "a0", "b1", "b2", "b0"], element_index={"a": [2, 1, 0], "b": [1, 2, 0]}
             ),
             "right": _JoinOutcome(
-                order=["b2", "b1", "a2", "a1", "a0", "b0"], element_index={"a": [2, 1, 0], "b": [2, 1, 0]}
+                table_order=["b2", "b1", "a2", "a1", "a0", "b0"], element_index={"a": [2, 1, 0], "b": [2, 1, 0]}
             ),
         },
         "right": {
             "no": _JoinOutcome(
-                order=["b2", "b1", "a2", "b3", "a1", "a0", "b0"], element_index={"a": [2, 1, 0], "b": [2, 1, 0]}
+                # FIXME: it should be element_index={"a": [2, 1, 0], "b": [1, 2, 0]}
+                table_order=["b2", "b1", "a2", "b3", "a1", "a0", "b0"],
+                element_index={"a": [2, 1, 0], "b": [2, 1, 0]},
             ),
             "left": _JoinOutcome(
-                order=["b2", "b1", "a2", "b3", "a1", "a0", "b0"],
+                table_order=["b2", "b1", "a2", "b3", "a1", "a0", "b0"],
                 warns=True,
                 element_index={"a": [2, 1, 0], "b": [2, 1, 0]},
             ),
             "right": _JoinOutcome(
-                order=["b2", "b1", "a2", "b3", "a1", "a0", "b0"], element_index={"a": [2, 1, 0], "b": [2, 1, 0]}
+                table_order=["b2", "b1", "a2", "b3", "a1", "a0", "b0"], element_index={"a": [2, 1, 0], "b": [2, 1, 0]}
             ),
         },
         "right_exclusive": {
-            "no": _JoinOutcome(order=["b3"], element_index={"a": None, "b": None}),
-            "left": _JoinOutcome(order=["b3"], warns=True, element_index={"a": None, "b": None}),
-            "right": _JoinOutcome(order=["b3"], element_index={"a": None, "b": None}),
+            "no": _JoinOutcome(table_order=["b3"], element_index={"a": None, "b": None}),
+            "left": _JoinOutcome(table_order=["b3"], warns=True, element_index={"a": None, "b": None}),
+            "right": _JoinOutcome(table_order=["b3"], element_index={"a": None, "b": None}),
         },
     }
 
     table = TableModel.parse(
-        AnnData(X=np.zeros((len(obs), 1)), obs=obs, var=pd.DataFrame(index=["g0"])),
+        AnnData(X=np.zeros((len(obs), 1)), obs=obs),
         region=["a", "b"],
         region_key="region",
         instance_key="instance_id",
@@ -1102,11 +1091,11 @@ def test_join_preserves_row_order_multiple_interleaved_regions(how, match_rows):
     ]
     assert bool(unsupported_match_rows_warnings) == outcome.warns
 
-    if outcome.order is None:
+    if outcome.table_order is None:
         assert joined_table is None
     else:
         assert joined_table is not None
-        assert list(joined_table.obs["label"]) == outcome.order
+        assert list(joined_table.obs["label"]) == outcome.table_order
 
     for name, expected_index in outcome.element_index.items():
         actual_element = element_dict[name]
