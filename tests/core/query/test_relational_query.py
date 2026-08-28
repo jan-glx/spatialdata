@@ -981,6 +981,8 @@ def _make_interleaved_regions_sdata() -> tuple[SpatialData, dict[str, dict[str, 
     # - we also set the index of the table obs to random values; these should be ignored (in the code we call .index on
     #   a region_key column, but the index is freshly reset by a nearby call of .reset_index() inside the join
     #   machinery)
+    # - "b3" and "c7" are unmatched table rows: "b3" refers to a missing instance in a
+    #   spatial element that exists, while "c7" refers to a region with no spatial element
     obs = pd.DataFrame(
         {
             "region": pd.Categorical(["b", "b", "a", "b", "a", "a", "b", "c"]),
@@ -989,30 +991,34 @@ def _make_interleaved_regions_sdata() -> tuple[SpatialData, dict[str, dict[str, 
         },
         index=np.random.default_rng(0).integers(0, 3, size=8).astype(str),
     )
-    shapes = {"a": circles([2, 1, 0]), "b": circles([1, 2, 0])}
+    # "a" additionally has unmatched instance ids 5, 4, and "b" has 4, 6.
+    # These test that unmatched element rows are preserved in element order by
+    # "left" and "left_exclusive" joins.
+    shapes = {"a": circles([2, 1, 0, 5, 4]), "b": circles([1, 2, 0, 4, 6])}
     # to make understanding easier, you may want to refer to the figure on joins from the docs:
     # https://spatialdata.scverse.org/en/stable/tutorials/notebooks/notebooks/examples/tables.html
     expected = {
         "left": {
             "no": _JoinOutcome(
-                table_order=["b2", "b1", "a2", "a1", "a0", "b0"], element_index={"a": [2, 1, 0], "b": [1, 2, 0]}
+                table_order=["b2", "b1", "a2", "a1", "a0", "b0"],
+                element_index={"a": [2, 1, 0, 5, 4], "b": [1, 2, 0, 4, 6]},
             ),
             "left": _JoinOutcome(
-                table_order=["a2", "a1", "a0", "b1", "b2", "b0"], element_index={"a": [2, 1, 0], "b": [1, 2, 0]}
+                table_order=["a2", "a1", "a0", "b1", "b2", "b0"],
+                element_index={"a": [2, 1, 0, 5, 4], "b": [1, 2, 0, 4, 6]},
             ),
             "right": _JoinOutcome(
                 table_order=["b2", "b1", "a2", "a1", "a0", "b0"],
                 warns=True,
-                element_index={"a": [2, 1, 0], "b": [1, 2, 0]},
+                element_index={"a": [2, 1, 0, 5, 4], "b": [1, 2, 0, 4, 6]},
             ),
         },
         "left_exclusive": {
-            # TODO: make this test more interesting by adding indices 5, 4 to "a" and 4, 6 to "b"
             # by design, "left_exclusive" never returns a table (only filtered elements), regardless of
             # match_rows or whether anything was actually excluded.
-            "no": _JoinOutcome(table_order=None, element_index={"a": None, "b": None}),
-            "left": _JoinOutcome(table_order=None, element_index={"a": None, "b": None}),
-            "right": _JoinOutcome(table_order=None, warns=True, element_index={"a": None, "b": None}),
+            "no": _JoinOutcome(table_order=None, element_index={"a": [5, 4], "b": [4, 6]}),
+            "left": _JoinOutcome(table_order=None, element_index={"a": [5, 4], "b": [4, 6]}),
+            "right": _JoinOutcome(table_order=None, warns=True, element_index={"a": [5, 4], "b": [4, 6]}),
         },
         "inner": {
             "no": _JoinOutcome(
