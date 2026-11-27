@@ -119,23 +119,16 @@ def _points_from_centroids(df: pd.DataFrame, e: SpatialElement, coordinate_syste
     return transformed
 
 
-@get_centroids.register(DataArray)
-@get_centroids.register(DataTree)
-def _(
-    e: DataArray | DataTree,
-    coordinate_system: str = "global",
-    return_background: bool = False,
-    return_area: bool = False,
-) -> DaskDataFrame:
-    """Get the centroids of a Labels element (2D or 3D)."""
+def _get_intrinsic_centroids_for_labels(
+    e: DataArray | DataTree, return_background: bool, return_area: bool
+) -> tuple[pd.DataFrame, DataArray]:
+    """Intrinsic centroids (and ``area``) of a Labels element, plus the ``scale0`` raster they were measured on."""
     model = get_model(e)
     if model not in [Labels2DModel, Labels3DModel]:
         raise ValueError(
             f"Centroids are not supported for elements modeled by {model.__name__}; "
             f"expected a Labels, Shapes or Points element."
         )
-    _validate_coordinate_system(e, coordinate_system)
-
     if isinstance(e, DataTree):
         scale0 = e["scale0"]
         assert isinstance(scale0, DataTree)
@@ -149,18 +142,25 @@ def _(
         df["area"] = counts.astype(float)
     if not return_background and 0 in df.index:
         df = df.drop(index=0)  # drop the background label
-    return _points_from_centroids(df, e, coordinate_system)
+    return df, e
 
 
-@get_centroids.register(GeoDataFrame)
+@get_centroids.register(DataArray)
+@get_centroids.register(DataTree)
 def _(
-    e: GeoDataFrame,
+    e: DataArray | DataTree,
     coordinate_system: str = "global",
     return_background: bool = False,
     return_area: bool = False,
 ) -> DaskDataFrame:
-    """Get the centroids of a Shapes element (circles or polygons/multipolygons)."""
+    """Get the centroids of a Labels element (2D or 3D)."""
     _validate_coordinate_system(e, coordinate_system)
+    df, scale0 = _get_intrinsic_centroids_for_labels(e, return_background, return_area)
+    return _points_from_centroids(df, scale0, coordinate_system)
+
+
+def _get_intrinsic_centroids_for_shapes(e: GeoDataFrame, return_area: bool) -> pd.DataFrame:
+    """Intrinsic centroids (and ``area``) of a Shapes element (circles or polygons/multipolygons)."""
     # separate points from (multi-)polygons
     first_geometry = e["geometry"].iloc[0]
     if isinstance(first_geometry, Point):
@@ -177,7 +177,30 @@ def _(
         is_circle = isinstance(first_geometry, Point)
         area = np.pi * e["radius"].to_numpy(dtype=float) ** 2 if is_circle else e.geometry.area.to_numpy()
         xy_df["area"] = area
-    return _points_from_centroids(xy_df, e, coordinate_system)
+    return xy_df
+
+
+@get_centroids.register(GeoDataFrame)
+def _(
+    e: GeoDataFrame,
+    coordinate_system: str = "global",
+    return_background: bool = False,
+    return_area: bool = False,
+) -> DaskDataFrame:
+    """Get the centroids of a Shapes element (circles or polygons/multipolygons)."""
+    _validate_coordinate_system(e, coordinate_system)
+    return _points_from_centroids(_get_intrinsic_centroids_for_shapes(e, return_area), e, coordinate_system)
+
+
+def _get_intrinsic_centroids_for_points(e: DaskDataFrame, return_area: bool) -> pd.DataFrame:
+    """Intrinsic coordinates of a Points element (points are their own centroids)."""
+    if return_area:
+        raise ValueError("`return_area` is not supported for points elements (points have no area).")
+    axes = get_axes_names(e)
+    if axes not in [("x", "y"), ("x", "y", "z")]:
+        raise ValueError(f"Expected points axes to be ('x', 'y') or ('x', 'y', 'z'), got {axes}.")
+    coords: pd.DataFrame = e[list(axes)].compute()
+    return coords
 
 
 @get_centroids.register(DaskDataFrame)
@@ -188,14 +211,8 @@ def _(
     return_area: bool = False,
 ) -> DaskDataFrame:
     """Get the centroids of a Points element."""
-    if return_area:
-        raise ValueError("`return_area` is not supported for points elements (points have no area).")
     _validate_coordinate_system(e, coordinate_system)
-    axes = get_axes_names(e)
-    if axes not in [("x", "y"), ("x", "y", "z")]:
-        raise ValueError(f"Expected points axes to be ('x', 'y') or ('x', 'y', 'z'), got {axes}.")
-    coords = e[list(axes)].compute()
-    return _points_from_centroids(coords, e, coordinate_system)
+    return _points_from_centroids(_get_intrinsic_centroids_for_points(e, return_area), e, coordinate_system)
 
 
 ##
