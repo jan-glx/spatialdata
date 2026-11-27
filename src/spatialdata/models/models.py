@@ -995,6 +995,9 @@ class TableModel:
     REGION_KEY_KEY = "region_key"
     INSTANCE_KEY = "instance_key"
     ATTRS_KEY = ATTRS_KEY
+    # squidpy-style storage keys for centroids/area written into a table (see add_centroids_to_table).
+    SPATIAL_KEY = "spatial"
+    AREA_KEY = "area"
 
     @classmethod
     def _validate_set_region_key(cls, data: AnnData, region_key: str | None = None) -> None:

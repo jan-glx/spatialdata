@@ -1,21 +1,26 @@
 from __future__ import annotations
 
 from functools import singledispatch
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 import xarray as xr
+from anndata import AnnData
 from dask.dataframe import DataFrame as DaskDataFrame
 from geopandas import GeoDataFrame
 from shapely import MultiPolygon, Point, Polygon
 from xarray import DataArray, DataTree
 
 from spatialdata._core.operations.transform import transform
-from spatialdata.models import get_axes_names
+from spatialdata.models import get_axes_names, get_table_keys
 from spatialdata.models._utils import SpatialElement
-from spatialdata.models.models import Labels2DModel, Labels3DModel, PointsModel, get_model
+from spatialdata.models.models import Labels2DModel, Labels3DModel, PointsModel, TableModel, get_model
 from spatialdata.transformations.operations import get_transformation
 from spatialdata.transformations.transformations import BaseTransformation
+
+if TYPE_CHECKING:
+    from spatialdata._core.spatialdata import SpatialData
 
 BoundingBoxDescription = dict[str, tuple[float, float]]
 
@@ -213,6 +218,171 @@ def _(
     """Get the centroids of a Points element."""
     _validate_coordinate_system(e, coordinate_system)
     return _points_from_centroids(_get_intrinsic_centroids_for_points(e, return_area), e, coordinate_system)
+
+
+def _get_intrinsic_centroids(e: SpatialElement, return_area: bool) -> pd.DataFrame:
+    """Intrinsic (untransformed) centroids of ``e``, indexed by instance id, without the background label.
+
+    The columns are ``x, y[, z]`` (in this order, whatever the element's axis order), plus ``area`` if requested.
+    """
+    if isinstance(e, DataArray | DataTree):
+        df, _ = _get_intrinsic_centroids_for_labels(e, return_background=False, return_area=return_area)
+    elif isinstance(e, GeoDataFrame):
+        df = _get_intrinsic_centroids_for_shapes(e, return_area)
+    elif isinstance(e, DaskDataFrame):
+        df = _get_intrinsic_centroids_for_points(e, return_area)
+    else:
+        raise ValueError(f"The object type {type(e)} is not supported.")
+    coords = sorted(c for c in df.columns if c != "area")
+    return df[coords + (["area"] if return_area else [])]
+
+
+def _resolve_annotating_table(sdata: SpatialData, element_name: str, table_name: str | None) -> str:
+    """Resolve the single table that annotates ``element_name`` (where centroids are written)."""
+    from spatialdata._core.query.relational_query import get_element_annotators
+
+    if table_name is not None:
+        if table_name not in sdata.tables:
+            raise KeyError(f"Table {table_name!r} not found in `sdata.tables`.")
+        return table_name
+    annotators = sorted(get_element_annotators(sdata, element_name))
+    if not annotators:
+        raise ValueError(
+            f"Element {element_name!r} has no annotating table to write centroids into. Use `get_centroids()` to "
+            f"get the centroids as a Points element instead, or annotate the element with a table first."
+        )
+    if len(annotators) > 1:
+        raise ValueError(
+            f"Element {element_name!r} is annotated by multiple tables ({', '.join(annotators)}); "
+            f"pass `table_name=` to choose one."
+        )
+    return annotators[0]
+
+
+def _put_centroids_into_table(table: AnnData, element_name: str, centroids: pd.DataFrame, overwrite: bool) -> None:
+    """Write ``centroids`` into ``obsm["spatial"]`` (and an ``area`` column into ``obs["area"]``) at the element's rows.
+
+    ``centroids`` is indexed by instance id, with coordinate columns ``x, y[, z]`` and optionally ``area``. Only the
+    table rows annotating ``element_name`` are touched (a table may annotate several elements); instances annotated
+    but absent from the element are written as NaN, and rows annotating other elements are preserved. If the target
+    already holds values for the element's rows, the write is refused unless ``overwrite=True``. All checks run before
+    anything is written, so a refused write leaves the table unchanged.
+    """
+    if not centroids.index.is_unique:
+        raise ValueError(f"Cannot write centroids for {element_name!r}: its instance index has duplicate values.")
+    _, region_key, instance_key = get_table_keys(table)
+    mask = (table.obs[region_key].astype(str) == str(element_name)).to_numpy()
+    if not mask.any():
+        raise ValueError(f"The table does not annotate element {element_name!r} (no matching rows).")
+
+    # Map each annotated instance to its centroid row (-1 where absent -> NaN). A *total* miss means the
+    # instance ids never align with the element index (mismatched dtype, or no shared instances).
+    keys = table.obs[instance_key].to_numpy()[mask]
+    idx = centroids.index.get_indexer(pd.Index(keys))
+    if (idx == -1).all():
+        raise ValueError(
+            f"No instance id annotating {element_name!r} is present in the element; check the table's "
+            f"`{instance_key}` values and dtype."
+        )
+    hit = idx != -1
+
+    def _scatter(values: np.ndarray) -> np.ndarray:
+        """Gather ``values`` (ordered like ``centroids``) onto the masked rows, NaN where absent."""
+        out = np.full((len(idx), *values.shape[1:]), np.nan)
+        out[hit] = values[idx[hit]]
+        return out
+
+    coords = centroids.drop(columns="area", errors="ignore")
+    ndim = coords.shape[1]
+    spatial = np.full((table.n_obs, ndim), np.nan)
+    existing = table.obsm.get(TableModel.SPATIAL_KEY)
+    if existing is not None:
+        existing = np.asarray(existing)
+        if existing.shape != (table.n_obs, ndim):
+            raise ValueError(
+                f"Existing obsm['{TableModel.SPATIAL_KEY}'] {existing.shape} is incompatible with {ndim}-D centroids "
+                f"for {element_name!r}; refusing to overwrite other regions."
+            )
+        spatial = existing.astype(float, copy=True)  # preserve other regions' coordinates
+        if not overwrite and np.isfinite(spatial[mask]).any():
+            raise ValueError(
+                f"obsm['{TableModel.SPATIAL_KEY}'] already holds coordinates for rows annotating {element_name!r}; "
+                f"pass overwrite=True to replace them."
+            )
+    spatial[mask] = _scatter(coords.to_numpy(dtype=float))
+
+    area: np.ndarray | None = None
+    if "area" in centroids.columns:
+        area = np.full(table.n_obs, np.nan)
+        if TableModel.AREA_KEY in table.obs:
+            existing_area = table.obs[TableModel.AREA_KEY]
+            if not pd.api.types.is_numeric_dtype(existing_area):
+                raise ValueError(
+                    f"obs['{TableModel.AREA_KEY}'] exists but is not numeric ({existing_area.dtype}); rename or drop "
+                    f"it first."
+                )
+            area = np.array(existing_area, dtype=float)  # preserve other regions' values (copy)
+            if not overwrite and np.isfinite(area[mask]).any():
+                raise ValueError(
+                    f"obs['{TableModel.AREA_KEY}'] already holds values for rows annotating {element_name!r} "
+                    f"(this may be an unrelated column); pass overwrite=True to replace them."
+                )
+        area[mask] = _scatter(centroids["area"].to_numpy(dtype=float))
+
+    table.obsm[TableModel.SPATIAL_KEY] = spatial
+    if area is not None:
+        table.obs[TableModel.AREA_KEY] = area
+
+
+def add_centroids_to_table(
+    sdata: SpatialData,
+    element_name: str,
+    *,
+    table_name: str | None = None,
+    return_area: bool = False,
+    inplace: bool = True,
+    overwrite: bool = False,
+) -> AnnData | None:
+    """
+    Write the centroids of an element into the table that annotates it.
+
+    The centroids go into ``obsm["spatial"]`` (columns ``x, y[, z]``) and, with ``return_area=True``, the sizes into
+    ``obs["area"]``, at the rows annotating ``element_name``. Rows annotating other elements are left as they are;
+    annotated instances that are absent from the element get NaN.
+
+    The coordinates and sizes are **intrinsic** (untransformed): a table can annotate several elements, each with its
+    own transformations, and the region column records which element each row belongs to. Use
+    :func:`get_centroids` to get the centroids in a coordinate system instead.
+
+    Parameters
+    ----------
+    sdata
+        The SpatialData object containing the element and the table.
+    element_name
+        The name of the element (points, shapes or labels) to compute the centroids of.
+    table_name
+        The table to write into. If None, the single table annotating ``element_name`` is used.
+    return_area
+        If True, also write the size of each instance, measured as in :func:`get_centroids` but in intrinsic units.
+    inplace
+        If True, modify the table in ``sdata`` and return None. If False, leave ``sdata`` unchanged and return a
+        modified copy of the table.
+    overwrite
+        If False, refuse to replace values that ``obsm["spatial"]`` or ``obs["area"]`` already hold for the rows of
+        ``element_name``.
+
+    Returns
+    -------
+    None if ``inplace`` is True, otherwise the modified copy of the table.
+    """
+    element = sdata[element_name]
+    if isinstance(element, AnnData):
+        raise ValueError(f"{element_name!r} is a table; centroids need a Labels, Shapes or Points element.")
+    table_name = _resolve_annotating_table(sdata, element_name, table_name)
+    centroids = _get_intrinsic_centroids(element, return_area)
+    table = sdata.tables[table_name] if inplace else sdata.tables[table_name].copy()
+    _put_centroids_into_table(table, element_name, centroids, overwrite)
+    return None if inplace else table
 
 
 ##

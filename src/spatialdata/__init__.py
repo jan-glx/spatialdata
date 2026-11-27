@@ -22,6 +22,7 @@ _LAZY_IMPORTS: dict[str, str] = {
     "sanitize_name": "spatialdata._core._utils",
     "sanitize_table": "spatialdata._core._utils",
     # _core.centroids
+    "add_centroids_to_table": "spatialdata._core.centroids",
     "get_centroids": "spatialdata._core.centroids",
     # _core.concatenate
     "concatenate": "spatialdata._core.concatenate",
@@ -80,6 +81,7 @@ __all__ = [
     "sanitize_name",
     "sanitize_table",
     # _core.centroids
+    "add_centroids_to_table",
     "get_centroids",
     # _core.concatenate
     "concatenate",
@@ -161,7 +163,7 @@ if TYPE_CHECKING:
     from spatialdata._core._utils import sanitize_name, sanitize_table
 
     # _core.centroids
-    from spatialdata._core.centroids import get_centroids
+    from spatialdata._core.centroids import add_centroids_to_table, get_centroids
 
     # _core.concatenate
     from spatialdata._core.concatenate import concatenate
