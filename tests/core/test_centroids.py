@@ -367,6 +367,8 @@ def test_add_centroids_to_table_overwrite_guard(full_sdata):
     table.obs["area"] = np.arange(table.n_obs, dtype=float)
     with pytest.raises(ValueError, match="overwrite=True"):
         add_centroids_to_table(full_sdata, "labels2d", return_area=True)
+    # the refused write must not have written obsm["spatial"] either
+    assert "spatial" not in table.obsm
     # with overwrite=True it proceeds and writes the pixel-count area
     add_centroids_to_table(full_sdata, "labels2d", return_area=True, overwrite=True)
     assert "spatial" in table.obsm
@@ -392,3 +394,14 @@ def test_put_centroids_into_table_keeps_other_regions():
     _put_centroids_into_table(table, "a", centroids, overwrite=False)
     assert np.array_equal(table.obsm["spatial"], [[1.0, 3.0], [2.0, 4.0], [7.0, 8.0], [9.0, 10.0]])
     assert table.obs["area"].tolist() == [11.0, 12.0, 5.0, 6.0]
+
+
+@pytest.mark.parametrize("overwrite", [False, True])
+def test_put_centroids_into_table_non_numeric_area_raises(overwrite: bool):
+    # a non-numeric obs['area'] is someone else's column: refuse rather than coerce the other region's values to NaN
+    table = _two_region_table([None, None, "small", "large"])
+    centroids = pd.DataFrame({"x": [1.0, 2.0], "y": [3.0, 4.0], "area": [11.0, 12.0]}, index=[1, 2])
+    with pytest.raises(ValueError, match="not numeric"):
+        _put_centroids_into_table(table, "a", centroids, overwrite=overwrite)
+    assert table.obs["area"].tolist()[2:] == ["small", "large"]
+    assert "spatial" not in table.obsm

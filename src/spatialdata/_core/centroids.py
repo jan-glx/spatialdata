@@ -262,7 +262,8 @@ def _put_centroids_into_table(table: AnnData, element_name: str, centroids: pd.D
     ``centroids`` is indexed by instance id, with coordinate columns ``x, y[, z]`` and optionally ``area``. Only the
     table rows annotating ``element_name`` are touched (a table may annotate several elements); instances annotated
     but absent from the element are written as NaN, and rows annotating other elements are preserved. If the target
-    already holds values for the element's rows, the write is refused unless ``overwrite=True``.
+    already holds values for the element's rows, the write is refused unless ``overwrite=True``. All checks run before
+    anything is written, so a refused write leaves the table unchanged.
     """
     if not centroids.index.is_unique:
         raise ValueError(f"Cannot write centroids for {element_name!r}: its instance index has duplicate values.")
@@ -294,35 +295,40 @@ def _put_centroids_into_table(table: AnnData, element_name: str, centroids: pd.D
     existing = table.obsm.get(TableModel.SPATIAL_KEY)
     if existing is not None:
         existing = np.asarray(existing)
-        if existing.shape == (table.n_obs, ndim):
-            spatial = existing.astype(float, copy=True)  # preserve other regions' coordinates
-            if not overwrite and np.isfinite(spatial[mask]).any():
-                raise ValueError(
-                    f"obsm['{TableModel.SPATIAL_KEY}'] already holds coordinates for rows annotating "
-                    f"{element_name!r}; pass overwrite=True to replace them."
-                )
-        elif existing.shape[0] == table.n_obs:
+        if existing.shape != (table.n_obs, ndim):
             raise ValueError(
-                f"Existing obsm['{TableModel.SPATIAL_KEY}'] {existing.shape} is incompatible with {ndim}-D "
-                f"centroids for {element_name!r}; refusing to overwrite other regions."
+                f"Existing obsm['{TableModel.SPATIAL_KEY}'] {existing.shape} is incompatible with {ndim}-D centroids "
+                f"for {element_name!r}; refusing to overwrite other regions."
+            )
+        spatial = existing.astype(float, copy=True)  # preserve other regions' coordinates
+        if not overwrite and np.isfinite(spatial[mask]).any():
+            raise ValueError(
+                f"obsm['{TableModel.SPATIAL_KEY}'] already holds coordinates for rows annotating {element_name!r}; "
+                f"pass overwrite=True to replace them."
             )
     spatial[mask] = _scatter(coords.to_numpy(dtype=float))
-    table.obsm[TableModel.SPATIAL_KEY] = spatial
 
+    area: np.ndarray | None = None
     if "area" in centroids.columns:
-        col = np.full(table.n_obs, np.nan)
+        area = np.full(table.n_obs, np.nan)
         if TableModel.AREA_KEY in table.obs:
-            existing_area = pd.Series(table.obs[TableModel.AREA_KEY])
-            if not overwrite and (existing_area.notna().to_numpy() & mask).any():
+            existing_area = table.obs[TableModel.AREA_KEY]
+            if not pd.api.types.is_numeric_dtype(existing_area):
+                raise ValueError(
+                    f"obs['{TableModel.AREA_KEY}'] exists but is not numeric ({existing_area.dtype}); rename or drop "
+                    f"it first."
+                )
+            area = np.array(existing_area, dtype=float)  # preserve other regions' values (copy)
+            if not overwrite and np.isfinite(area[mask]).any():
                 raise ValueError(
                     f"obs['{TableModel.AREA_KEY}'] already holds values for rows annotating {element_name!r} "
                     f"(this may be an unrelated column); pass overwrite=True to replace them."
                 )
-            # Preserve values outside the element's rows; non-numeric entries coerce to NaN (only reachable
-            # with overwrite=True, where replacing that column is the intent).
-            col = pd.to_numeric(existing_area, errors="coerce").to_numpy(dtype=float, copy=True)
-        col[mask] = _scatter(centroids["area"].to_numpy(dtype=float))
-        table.obs[TableModel.AREA_KEY] = col
+        area[mask] = _scatter(centroids["area"].to_numpy(dtype=float))
+
+    table.obsm[TableModel.SPATIAL_KEY] = spatial
+    if area is not None:
+        table.obs[TableModel.AREA_KEY] = area
 
 
 def add_centroids_to_table(
