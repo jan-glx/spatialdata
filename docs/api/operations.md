@@ -11,6 +11,7 @@ Operations on `SpatialData` objects.
 .. autofunction:: get_element_instances
 .. autofunction:: get_extent
 .. autofunction:: get_centroids
+.. autofunction:: add_centroids_to_table
 .. autofunction:: join_spatialelement_table
 .. autofunction:: match_element_to_table
 .. autofunction:: match_table_to_element
